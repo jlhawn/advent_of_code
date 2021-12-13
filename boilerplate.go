@@ -14,10 +14,10 @@ import (
 
 const inputFilename = "./INPUT"
 
-func readInputLines() ([]string, error) {
+func readInputLines() []string {
 	inputFile, err := os.Open(inputFilename)
 	if err != nil {
-		return nil, fmt.Errorf("unable to open input file: %w", err)
+		log.Fatal(fmt.Errorf("unable to open input file: %w", err))
 	}
 	defer inputFile.Close()
 
@@ -38,10 +38,10 @@ func readInputLines() ([]string, error) {
 		lines = append(lines, strings.TrimSpace(line))
 	}
 	if !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("unexpected error reading input: %w", err)
+		log.Fatal(fmt.Errorf("unexpected error reading input: %w", err))
 	}
 
-	return lines, nil
+	return lines
 }
 
 func main() {
