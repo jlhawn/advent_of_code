@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"math/rand"
 	"os"
 	"sort"
 	"strconv"
@@ -49,6 +50,50 @@ func readInputLines() []string {
 	}
 
 	return lines
+}
+
+func loadGraph() *Graph {
+	nodes := map[Coord]*Node{}
+	rawLines := readInputLines()
+	var start, end *Node
+	for j, rawLine := range rawLines {
+		for i, rawRisk := range []byte(rawLine) {
+			risk, err := strconv.Atoi(string(rawRisk))
+			if err != nil { log.Fatal(err) }
+
+			coord := Coord{X: i, Y: j}
+			node := &Node{Coord: coord, Risk: risk}
+			nodes[coord] = node
+
+			if start == nil {
+				start = node
+			}
+			end = node
+		}
+	}
+	return &Graph{Nodes: nodes, Start: start, End: end, Length: len(rawLines), Width: len(rawLines[0])}
+}
+
+func loadRandomGraph(size int) *Graph {
+	rand.Seed(time.Now().UnixNano())
+
+	nodes := map[Coord]*Node{}
+	var start, end *Node
+	for j := 0; j < size; j++ {
+		for i := 0; i < size; i++ {
+			risk := rand.Intn(9)+1
+
+			coord := Coord{X: i, Y: j}
+			node := &Node{Coord: coord, Risk: risk}
+			nodes[coord] = node
+
+			if start == nil {
+				start = node
+			}
+			end = node
+		}
+	}
+	return &Graph{Nodes: nodes, Start: start, End: end, Length: size, Width: size}
 }
 
 type Coord struct {
@@ -183,31 +228,6 @@ func (g *Graph) Print() {
 	}
 }
 
-func loadGraph() *Graph {
-	nodes := map[Coord]*Node{}
-	rawLines := readInputLines()
-	var start, end *Node
-	for j, rawLine := range rawLines {
-		for i, rawRisk := range []byte(rawLine) {
-			risk, err := strconv.Atoi(string(rawRisk))
-			if err != nil { log.Fatal(err) }
-
-			// fmt.Printf("%d", risk)
-
-			coord := Coord{X: i, Y: j}
-			node := &Node{Coord: coord, Risk: risk}
-			nodes[coord] = node
-
-			if start == nil {
-				start = node
-			}
-			end = node
-		}
-		// fmt.Println()
-	}
-	return &Graph{Nodes: nodes, Start: start, End: end, Length: len(rawLines), Width: len(rawLines[0])}
-}
-
 func (g *Graph) determineMinPaths() map[Coord]*Route {
 	paths := &RouteSlice{NewRoute(g)}
 	visited := map[Coord]*Route{}
@@ -270,39 +290,12 @@ func solvePuzzle() map[Coord]*Route {
 	graph := loadGraph()
 	paths := graph.determineMinPaths()
 	pathToEnd := paths[graph.End.Coord]
-
-	animate := false
-	if animate {
-		sortedPaths := SortMinPaths(paths)
-		visited := map[Coord]bool{}
-		for _, path := range sortedPaths {
-			graph.DrawPath(path, visited)
-			time.Sleep(50*time.Millisecond)
-			fmt.Print("\033[2J") //Clear screen
-			fmt.Printf("\033[%d;%dH", 0, 0) // Set cursor position
-		}
-	} else {
-		graph.DrawPath(pathToEnd, nil)
-	}
 	
 	fmt.Printf("minimum risk path to end has total risk of %d\n", pathToEnd.TotalRisk)
 
 	graph.TileDownAcross(5)
 	paths = graph.determineMinPaths()
 	pathToEnd = paths[graph.End.Coord]
-
-	if animate {
-		sortedPaths := SortMinPaths(paths)
-		visited := map[Coord]bool{}
-		for _, path := range sortedPaths {
-			graph.DrawPath(path, visited)
-			time.Sleep(50*time.Millisecond)
-			fmt.Print("\033[2J") //Clear screen
-			fmt.Printf("\033[%d;%dH", 0, 0) // Set cursor position
-		}
-	} else {
-		graph.DrawPath(pathToEnd, nil)
-	}
 	
 	fmt.Printf("minimum risk path to end has total risk of %d\n", pathToEnd.TotalRisk)
 
@@ -407,6 +400,36 @@ type ImagePoint struct {
 	PathCount int
 }
 
+func calculatePathCount(from Coord, branches map[Coord][]Coord, coordImagePoints map[Coord]*ImagePoint) {
+	toCoords := branches[from]
+	for _, to := range toCoords {
+		calculatePathCount(to, branches, coordImagePoints)
+	}
+
+	pathCountSum := 1
+	for _, to := range toCoords {
+		pathCountSum += coordImagePoints[to].PathCount
+	}
+	coordImagePoints[from].PathCount = pathCountSum
+}
+
+func calculatePathCounts(paths map[Coord]*Route, coordImagePoints map[Coord]*ImagePoint) {
+	// Use the prev pointer for each path to build a list of next coordinates
+	// for each coordinate.
+	branches := make(map[Coord][]Coord, len(paths))
+	for _, path := range paths {
+		if path.Prev == nil {
+			continue
+		}
+
+		fromCoord := path.Prev.Node.Coord
+		toCoord := path.Node.Coord
+		branches[fromCoord] = append(branches[fromCoord], toCoord)
+	}
+
+	calculatePathCount(Coord{X: 0, Y: 0}, branches, coordImagePoints)
+}
+
 func createImage(paths map[Coord]*Route) {
 	imagePoints := make([]ImagePoint, 0, len(paths))
 	coordImagePoints := make(map[Coord]*ImagePoint, len(paths))
@@ -418,17 +441,12 @@ func createImage(paths map[Coord]*Route) {
 		coordImagePoints[coord] = &imagePoints[len(imagePoints)-1]
 	}
 
+	calculatePathCounts(paths, coordImagePoints)
+
 	maxTotalRisk := 0
 	for _, path := range paths {
 		if path.TotalRisk > maxTotalRisk {
 			maxTotalRisk = path.TotalRisk
-		}
-
-		// Walk the path and increment the path count for each point.
-		route := path
-		for route != nil {
-			coordImagePoints[route.Node.Coord].PathCount++
-			route = route.Prev
 		}
 	}
 
