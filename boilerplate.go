@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"sort"
 	"strconv"
@@ -17,7 +16,7 @@ const inputFilename = "./INPUT"
 func readInputLines() []string {
 	inputFile, err := os.Open(inputFilename)
 	if err != nil {
-		log.Fatal(fmt.Errorf("unable to open input file: %w", err))
+		panic(err)
 	}
 	defer inputFile.Close()
 
@@ -38,7 +37,7 @@ func readInputLines() []string {
 		lines = append(lines, strings.TrimSpace(line))
 	}
 	if !errors.Is(err, io.EOF) {
-		log.Fatal(fmt.Errorf("unexpected error reading input: %w", err))
+		panic(err)
 	}
 
 	return lines
