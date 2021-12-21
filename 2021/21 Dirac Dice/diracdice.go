@@ -9,6 +9,7 @@ import (
 	// "sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const inputFilename = "./INPUT"
@@ -43,7 +44,7 @@ func readInputLines() []string {
 	return lines
 }
 
-func initGame() *GameState {
+func loadStartingPositions() (int, int) {
 	rawLines := readInputLines()
 
 	starts := []int{0, 0}
@@ -54,9 +55,21 @@ func initGame() *GameState {
 		starts[i] = start
 	}
 
+	return starts[0]-1, starts[1]-1
+}
+
+type GameState struct {
+	P1Position, P2Position int
+	P1Score, P2Score int
+
+	P1Turn bool
+}
+
+func NewGame(p1Start, p2Start int) *GameState {
 	return &GameState{
-		P1Start: starts[0]-1,
-		P2Start: starts[1]-1,
+		P1Position: p1Start,
+		P2Position: p2Start,
+		P1Turn: true,
 	}
 }
 
@@ -77,50 +90,56 @@ func (d *DeterministicDie) Roll() int {
 	return result
 }
 
-type GameState struct {
-	P1Start, P2Start int
-
-	P1Space, P2Space int
-	P1Score, P2Score int
-
-	TurnNo int
-}
-
-func (g *GameState) Reset() {
-	g.P1Space = g.P1Start
-	g.P2Space = g.P2Start
-	g.P1Score = 0
-	g.P2Score = 0
-	g.TurnNo = 0
-}
-
-func (g *GameState) PlayDeterministiclyToScore(winScore int) {
-	g.Reset()
+func (g *GameState) PlayDeterministicDie(winScore int) {
 	die := NewDeterministicDie(100)
 
 	for g.P1Score < winScore && g.P2Score < winScore {
 		rollVal := die.Roll() + die.Roll() + die.Roll()
-		if g.TurnNo % 2 == 0 {
+		if g.P1Turn {
 			// P1 Turn
-			g.P1Space = (g.P1Space + rollVal) % 10
-			g.P1Score += g.P1Space + 1
+			g.P1Position = (g.P1Position + rollVal) % 10
+			g.P1Score += g.P1Position + 1
 		} else {
 			// P2 Turn
-			g.P2Space = (g.P2Space + rollVal) % 10
-			g.P2Score += g.P2Space + 1
+			g.P2Position = (g.P2Position + rollVal) % 10
+			g.P2Score += g.P2Position + 1
 		}
-		g.TurnNo++
+		g.P1Turn = !g.P1Turn
 	}
 
-	fmt.Printf("After %d turns and %d deterministic die rolls, P1 score = %d, P2 score = %d\n", g.TurnNo, die.TotalRolls, g.P1Score, g.P2Score)
+	fmt.Printf("After %d deterministic die rolls, P1 score = %d, P2 score = %d\n", die.TotalRolls, g.P1Score, g.P2Score)
 	lowerScore := g.P1Score
 	if g.P2Score < lowerScore {
 		lowerScore = g.P2Score
 	}
-	fmt.Printf("lowerScore * numRolls = %d\n", lowerScore * die.TotalRolls)
+	fmt.Printf("\tlowerScore * numRolls = %d\n", lowerScore * die.TotalRolls)
 }
 
-func (g *GameState) PlayDiracToScore(winScore int) {
+type WinCounts struct {
+	P1, P2 int
+}
+
+func (a *WinCounts) Add(b WinCounts) {
+	a.P1 += b.P1
+	a.P2 += b.P2
+}
+
+func (a *WinCounts) Multiply(b int) {
+	a.P1 *= b
+	a.P2 *= b
+}
+
+type WinCountCacheKey struct {
+	GameState
+	rollSum int
+}
+
+// WinCountCache maps a GameState and rollSum to the number of wins in all
+// universes which could branch from that game state using a Dirac Die where
+// the three roll values summed to that rollSum.
+type WinCountCache map[WinCountCacheKey]WinCounts
+
+func (g *GameState) PlayDiracDie(winScore int) {
 	// It's a 3-sided die and we always roll 3x for each player's turn so we don't need to keep
 	// track of dice state only the possible number of ways to roll different numbers.
 	//
@@ -137,42 +156,65 @@ func (g *GameState) PlayDiracToScore(winScore int) {
 	// So instead of exploding into 27 different universes for each turn, we only need to keep track of the
 	// count of universes with the same outcome.
 	// Also: Hey! What do you know? It's the trinomial coefficients!
-	g.Reset()
-	p1Wins, p2Wins := diracTurn(true, false, 0, 1, g.P1Start, g.P2Start, 0, 0, winScore)
-	fmt.Printf("with a dirac die, player 1 wins in %d universes, player 2 wins in %d universes\n", p1Wins, p2Wins)
+	cache := make(WinCountCache)
+	wins := diracTurn(true, 0, winScore, *g, cache)
+	fmt.Printf("With a dirac die, player 1 wins in %d universes, player 2 wins in %d universes\n", wins.P1, wins.P2)
 }
 
-func diracTurn(init, p1Turn bool, rollSum, multiplier, p1Position, p2Position, p1Score, p2Score, winScore int) (p1Wins, p2Wins int) {
-	if !init {
-		if p1Turn {
-			p1Position = (p1Position + rollSum) % 10
-			p1Score += p1Position + 1
-		} else {
-			p2Position = (p2Position + rollSum) % 10
-			p2Score += p2Position + 1
-		}
-	}
+func diracTurn(init bool, rollSum, winScore int, state GameState, cache WinCountCache) (wins WinCounts) {
+	cacheKey := WinCountCacheKey{state, rollSum}
 
-	// Check for a win.
-	if p1Score >= winScore {
-		return multiplier, 0
-	}
-	if p2Score >= winScore {
-		return 0, multiplier
+	if !init {
+		if cached, ok := cache[cacheKey]; ok {
+			// Another universe had this same game state and we
+			// know the result already.
+			return cached
+		}
+
+		if state.P1Turn {
+			state.P1Position = (state.P1Position + rollSum) % 10
+			state.P1Score += state.P1Position + 1
+		} else {
+			state.P2Position = (state.P2Position + rollSum) % 10
+			state.P2Score += state.P2Position + 1
+		}
+
+		// Check for a win.
+		if state.P1Score >= winScore || state.P2Score >= winScore {
+			wins = WinCounts{1, 0}
+			if state.P2Score > state.P1Score {
+				wins = WinCounts{0, 1}
+			}
+
+			cache[cacheKey] = wins
+			return wins
+		}
+
+		state.P1Turn = !state.P1Turn
 	}
 
 	// For the next turn, try all the different possible next roll outcomes.
 	for _, combination := range [][]int{{3, 1}, {4, 3}, {5, 6}, {6, 7}, {7, 6}, {8, 3}, {9, 1}} {
 		rollSum, ways := combination[0], combination[1]
-		p1, p2 := diracTurn(false, !p1Turn, rollSum, ways*multiplier, p1Position, p2Position, p1Score, p2Score, winScore)
-		p1Wins, p2Wins = p1Wins+p1, p2Wins+p2
+		universeWins := diracTurn(false, rollSum, winScore, state, cache)
+		universeWins.Multiply(ways)
+		wins.Add(universeWins)
 	}
 
-	return p1Wins, p2Wins
+	cache[cacheKey] = wins
+	return wins
 }
 
 func main() {
-	game := initGame()
-	game.PlayDeterministiclyToScore(1000)
-	game.PlayDiracToScore(21)
+	start := time.Now()
+	p1Start, p2Start := loadStartingPositions()
+
+	game := NewGame(p1Start, p2Start)
+	game.PlayDeterministicDie(1000)
+
+	game = NewGame(p1Start, p2Start)
+	game.PlayDiracDie(21)
+
+	runtime := time.Since(start)
+	fmt.Println(runtime)
 }
