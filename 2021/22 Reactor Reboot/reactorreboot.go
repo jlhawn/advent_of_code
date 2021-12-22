@@ -2,14 +2,80 @@ package main
 
 import (
 	"bufio"
+	"constraints"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	// "sort"
 	"strconv"
 	"strings"
+	"time"
 )
+
+func Max[T constraints.Ordered](vals ...T) T {
+	var max T
+	if len(vals) == 0 {
+		return max
+	}
+	max = vals[0]
+	for _, val := range vals[1:] {
+		if val > max {
+			max = val
+		}
+	}
+	return max
+}
+
+func Min[T constraints.Ordered](vals ...T) T {
+	var min T
+	if len(vals) == 0 {
+		return min
+	}
+	min = vals[0]
+	for _, val := range vals[1:] {
+		if val < min {
+			min = val
+		}
+	}
+	return min
+}
+
+func Map[T1, T2 any](f func(T1) T2, vals ...T1) []T2 {
+	mapped := make([]T2, len(vals))
+	for i, val := range vals {
+		mapped[i] = f(val)
+	}
+	return mapped
+}
+
+func Reduce[T any](f func(T, T) T, init T, vals ...T) T {
+	reduced := init
+	for _, val := range vals {
+		reduced = f(reduced, val)
+	}
+	return reduced
+}
+
+func Sum[T constraints.Integer | constraints.Float](vals ...T) T {
+	var zero T
+	return Reduce(func(a, b T) T { return a + b }, zero, vals...)
+}
+
+func Filter[T any](f func(T) bool, vals ...T) []T {
+	filtered := make([]T, 0, len(vals))
+	for _, val := range vals {
+		if f(val) {
+			filtered = append(filtered, val)
+		}
+	}
+	return filtered
+}
+
+func ForEach[T any](f func(T), vals ...T) {
+	for _, val := range vals {
+		f(val)
+	}
+}
 
 const inputFilename = "./INPUT"
 
@@ -43,26 +109,18 @@ func readInputLines() []string {
 	return lines
 }
 
-func loadRebootSteps() []RebootStep {
-	rawLines := readInputLines()
-	steps := make([]RebootStep, len(rawLines))
-	for i, line := range rawLines {
-		steps[i] = parseRebootStep(line)
-	}
-	return steps
+func loadRebootSteps() []ReactorCuboid {
+	return Map(parseRebootStep, readInputLines()...)
 }
 
-func parseRebootStep(line string) RebootStep {
-	parts := strings.Split(line, " ")
-
-	target := parts[0] == "on"
-
-	ranges := strings.Split(parts[1], ",")
+func parseRebootStep(line string) ReactorCuboid {
+	onOrOff, allRanges, _ := strings.Cut(line, " ")
+	ranges := strings.Split(allRanges, ",")
 
 	xRange, yRange, zRange := parseRange(ranges[0]), parseRange(ranges[1]), parseRange(ranges[2])
 
-	return RebootStep{
-		Target: target,
+	return ReactorCuboid{
+		IsOn: onOrOff == "on",
 		Range3D: Range3D{xRange, yRange, zRange},
 	}
 }
@@ -70,11 +128,11 @@ func parseRebootStep(line string) RebootStep {
 func parseRange(rawRange string) Range {
 	// First two characters are x=, y=, or z= and can be ignored.
 	rawRange = rawRange[2:]
-	parts := strings.Split(rawRange, "..")
+	rawMin, rawMax, _ := strings.Cut(rawRange, "..")
 
-	min, err := strconv.Atoi(parts[0])
+	min, err := strconv.Atoi(rawMin)
 	if err != nil { panic(err) }
-	max, err := strconv.Atoi(parts[1])
+	max, err := strconv.Atoi(rawMax)
 	if err != nil { panic(err) }
 
 	// Note: a range is a half-open interval.
@@ -85,8 +143,6 @@ func parseRange(rawRange string) Range {
 type Range struct {
 	Min, Max int64
 }
-
-var AnEmptyRange = Range{0, 0} // Min >= Max
 
 func (r Range) Length() int64 {
 	return r.Max - r.Min
@@ -101,30 +157,12 @@ func (r Range) IsEmpty() bool {
 }
 
 func (r Range) Intersect(s Range) Range {
-	// Establish the invariant that r.Min <= s.Min
-	if s.Min < r.Min {
-		// Swap them if not.
-		r, s = s, r
-	}
-
-	if r.Max < s.Min {
-		return AnEmptyRange
-	}
-
-	minMax := r.Max
-	if s.Max < minMax {
-		minMax = s.Max
-	}
-
-	return Range{s.Min, minMax}
+	return Range{Max(r.Min, s.Min), Min(r.Max, s.Max)}
 }
 
-// Range3D is INCLUSIVE!
 type Range3D struct {
 	X, Y, Z Range
 }
-
-var AnEmptyRange3D = Range3D{AnEmptyRange, AnEmptyRange, AnEmptyRange}
 
 func (r Range3D) Volume() int64 {
 	return r.X.Length() * r.Y.Length() * r.Z.Length()
@@ -193,14 +231,14 @@ func (r Range3D) Subtract(s Range3D) []Range3D {
 	return cuboids
 }
 
-type RebootStep struct {
-	Target bool
+type ReactorCuboid struct {
+	IsOn bool
 	Range3D
 }
 
-func (s RebootStep) IsInitStep() bool {
+func (c ReactorCuboid) IsInitStep() bool {
 	initRange := Range{-50, 50}
-	return s.SubsetOf(Range3D{initRange, initRange, initRange})
+	return c.SubsetOf(Range3D{initRange, initRange, initRange})
 }
 
 type Point struct {
@@ -209,13 +247,13 @@ type Point struct {
 
 type ReactorGrid []Range3D
 
-func (g *ReactorGrid) Execute(step RebootStep) {
+func (g *ReactorGrid) Execute(step ReactorCuboid) {
 	oldGrid := *g
 	newGrid := make(ReactorGrid, 0, len(oldGrid))
 	for _, cuboid := range oldGrid {
 		newGrid = append(newGrid, cuboid.Subtract(step.Range3D)...)
 	}
-	if step.Target {
+	if step.IsOn {
 		newGrid = append(newGrid, step.Range3D)
 	}
 	*g = newGrid
@@ -225,6 +263,56 @@ func (g ReactorGrid) OnCubeCount() int64 {
 	var sum int64
 	for _, cuboid := range g {
 		sum += cuboid.Volume()
+	}
+	return sum
+}
+
+type ReactorGrid2 map[Range3D]int64
+
+func (g ReactorGrid2) Increment(cuboid Range3D, by int64) {
+	g[cuboid] += by
+}
+
+func (g ReactorGrid2) Remove(cuboid Range3D) {
+	delete(g, cuboid)
+}
+
+func (g ReactorGrid2) Update(updates ReactorGrid2) {
+	for cuboid, count := range updates {
+		g[cuboid] += count
+		if g[cuboid] == 0 {
+			delete(g, cuboid)
+		}
+	}
+}
+
+func (g ReactorGrid2) Execute(step ReactorCuboid) {
+	updates := make(ReactorGrid2, len(g))
+	for cuboid, count := range g {
+		if cuboid.SubsetOf(step.Range3D) {
+			g.Remove(cuboid)
+			continue
+		}
+
+		intersection := cuboid.Intersect(step.Range3D)
+		if intersection.IsEmpty() {
+			continue
+		}
+
+		updates.Increment(intersection, -count)
+	}
+
+	if step.IsOn {
+		updates.Increment(step.Range3D, 1)
+	}
+
+	g.Update(updates)
+}
+
+func (g ReactorGrid2) OnCubeCount() int64 {
+	var sum int64
+	for cuboid, count := range g {
+		sum += count * cuboid.Volume()
 	}
 	return sum
 }
@@ -241,10 +329,19 @@ func main() {
 
 	fmt.Printf("After initialization procedure, %d cubes are on.\n", grid.OnCubeCount())
 
+	start := time.Now()
 	grid = ReactorGrid{}
 	for _, step := range steps {
 		grid.Execute(step)
 	}
 
-	fmt.Printf("After full reboot procedure, %d cubes are on.\n", grid.OnCubeCount())
+	fmt.Printf("After full reboot procedure, %d cubes are on in %s.\n", grid.OnCubeCount(), time.Since(start))
+
+	start = time.Now()
+	grid2 := ReactorGrid2{}
+	for _, step := range steps {
+		grid2.Execute(step)
+	}
+
+	fmt.Printf("After full reboo2 procedure, %d cubes are on in %s.\n", grid2.OnCubeCount(), time.Since(start))
 }
