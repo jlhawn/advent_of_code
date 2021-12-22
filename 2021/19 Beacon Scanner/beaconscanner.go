@@ -2,11 +2,11 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -76,7 +76,7 @@ func parsePointSet(rawLines []string) (*PointSet, []string) {
 	return pointSet, rawLines
 }
 
-func parsePoint(line string) *Point {
+func parsePoint(line string) Point {
 	parts := strings.Split(line, ",")
 	x, err := strconv.Atoi(parts[0])
 	if err != nil { panic(err) }
@@ -85,64 +85,41 @@ func parsePoint(line string) *Point {
 	z, err := strconv.Atoi(parts[2])
 	if err != nil { panic(err) }
 
-	return NewPoint(x, y, z)
+	return Point{x, y, z}
 }
 
 type Point struct {
 	X, Y, Z int
 }
 
-// NewPoint creates a new point with the given coordinates.
-func NewPoint(x, y, z int) *Point {
-	return &Point{X: x, Y: y, Z: z}
+// Add returns a point which is the vector sum
+// of this point and the given point.
+func (p Point) Add(o Point) Point {
+	return Point{p.X+o.X, p.Y+o.Y, p.Z+o.Z}
 }
 
-// Clone creates a copy of this point and returns a pointer to it.
-// Does not mutate this point.
-func (p *Point) Clone() *Point {
-	return NewPoint(p.X, p.Y, p.Z)
+// Subtract returns a point which is the vector subtraction
+// of this point and the given point.
+func (p Point) Subtract(o Point) Point {
+	return Point{p.X-o.X, p.Y-o.Y, p.Z-o.Z}
 }
 
-// Add adds the given point to this point, mutating itself.
-// Returns itself to allow chaining.
-func (p *Point) Add(o *Point) *Point {
-	p.X += o.X
-	p.Y += o.Y
-	p.Z += o.Z
-	return p
+// Rotate90X returns this point rotated 90 degrees about the X axis.
+func (p Point) Rotate90X() Point {
+	return Point{X: p.X, Y: -p.Z, Z: p.Y}
 }
 
-// Subtract subtracts the given point from this point, mutating itself.
-// Returns itself to allow chaining.
-func (p *Point) Subtract(o *Point) *Point {
-	p.X -= o.X
-	p.Y -= o.Y
-	p.Z -= o.Z
-	return p
+// Rotate90Y returns this point rotated 90 degrees about the Y axis.
+func (p Point) Rotate90Y() Point {
+	return Point{X: p.Z, Y: p.Y, Z: -p.X}
 }
 
-// Rotate90X rotates the given point 90 degrees about the X axis, mutating itself.
-// Returns itself to allow chaining.
-func (p *Point) Rotate90X() *Point {
-	p.Y, p.Z = -p.Z, p.Y
-	return p
+// Rotate90Z returns this point rotated 90 degrees about the Z axis.
+func (p Point) Rotate90Z() Point {
+	return Point{X: -p.Y, Y: p.X, Z: p.Z}
 }
 
-// Rotate90Y rotates the given point 90 degrees about the Y axis, mutating itself.
-// Returns itself to allow chaining.
-func (p *Point) Rotate90Y() *Point {
-	p.X, p.Z = p.Z, -p.X
-	return p
-}
-
-// Rotate90Z rotates the given point 90 degrees about the Z axis, mutating itself.
-// Returns itself to allow chaining.
-func (p *Point) Rotate90Z() *Point {
-	p.X, p.Y = -p.Y, p.X
-	return p
-}
-
-func (p *Point) ManhattanDistance(o *Point) int {
+func (p Point) ManhattanDistance(o Point) int {
 	dx := p.X - o.X
 	if dx < 0 {
 		dx = -dx
@@ -158,113 +135,124 @@ func (p *Point) ManhattanDistance(o *Point) int {
 	return dx + dy + dz
 }
 
+func (p Point) MagnitudeSquared() int {
+	return p.X*p.X + p.Y*p.Y + p.Z*p.Z
+}
+
 type PointSet struct {
-	Points []*Point
+	Points []Point
 	Set map[Point]bool
 
 	// A cache of 24 different orientations of this PointSet.
 	OrientationsCache []*PointSet
+
+	// A set of point fingerprints for each point in this set.
+	// Must call GenerateFingerprints() to initialize.
+	Fingerprints map[Point]PointFingerprint
 }
 
 // NewPointSet creates a new empty PointSet with the given capacity hint.
 // It is able to grow its capacity as needed.
 func NewPointSet(cap int) *PointSet {
 	return &PointSet{
-		Points: make([]*Point, 0, cap),
+		Points: make([]Point, 0, cap),
 		Set: make(map[Point]bool, cap),
 	}
 }
 
 // Size returns the number of elements in this set.
-func (p *PointSet) Size() int {
-	return len(p.Set)
+func (s *PointSet) Size() int {
+	return len(s.Set)
 }
 
-func (p *PointSet) Contains(point *Point) bool {
-	return p.Set[*point]
+func (s *PointSet) Contains(p Point) bool {
+	return s.Set[p]
 }
 
 // Add inserts the given point into this point set if it is
 // not in the set already.
-func (p *PointSet) Add(point *Point) {
-	if p.Contains(point) {
+func (s *PointSet) Add(p Point) {
+	if s.Contains(p) {
 		return // The point is already in the set.
 	}
 
-	p.Points = append(p.Points, point)
-	p.Set[*point] = true
+	s.Points = append(s.Points, p)
+	s.Set[p] = true
 }
 
 // Clone creates a new PointSet which is a copy of this one.
-func (p *PointSet) Clone() *PointSet {
-	cloned := NewPointSet(len(p.Points))
-	for _, point := range p.Points {
-		cloned.Add(point.Clone())
+// The cloned set will *NOT* have initialized
+// OrientationsCache or Fingerprints values.
+func (s *PointSet) Clone() *PointSet {
+	cloned := NewPointSet(s.Size())
+	for _, p := range s.Points {
+		cloned.Add(p)
 	}
 	return cloned
 }
 
 // Remap modifies every point in this set with the given remap func.
-// The remap function should be bijective, i.e., an invertible,
-// one-to-one function which mutates the given point.
+// The remap function must be bijective, i.e., an invertible,
+// one-to-one function which operates on a point and returns a new
+// point. No two points must map to the same point.
 // Returns itself to allow chaining.
-func (p *PointSet) Remap(remapFunc func(*Point)) *PointSet {
-	for i := range p.Points {
-		delete(p.Set, *p.Points[i])
-		remapFunc(p.Points[i])
+func (s *PointSet) Remap(remapFunc func(Point) Point) *PointSet {
+	for i, p := range s.Points {
+		delete(s.Set, p)
+		s.Points[i] = remapFunc(p)
 	}
 
-	for i := range p.Points {
-		p.Set[*p.Points[i]] = true
+	for _, p := range s.Points {
+		s.Set[p] = true
 	}
 
-	return p
+	return s
 }
 
 // Translate is a remap with an Add function.
 // Returns itself to allow chaining.
-func (p *PointSet) Translate(v *Point) *PointSet {
-	return p.Remap(func(point *Point) { point.Add(v) })
+func (s *PointSet) Translate(v Point) *PointSet {
+	return s.Remap(func(p Point) Point { return p.Add(v) })
 }
 
 // Rotate90X is a remap which rotates each point 90 degrees about the x axis.
 // Returns itself to allow chaining.
-func (p *PointSet) Rotate90X() *PointSet {
-	return p.Remap(func(point *Point) { point.Rotate90X() })
+func (s *PointSet) Rotate90X() *PointSet {
+	return s.Remap(func(p Point) Point { return p.Rotate90X() })
 }
 
 // Rotate90Y is a remap which rotates each point 90 degrees about the y axis.
 // Returns itself to allow chaining.
-func (p *PointSet) Rotate90Y() *PointSet {
-	return p.Remap(func(point *Point) { point.Rotate90Y() })
+func (s *PointSet) Rotate90Y() *PointSet {
+	return s.Remap(func(p Point) Point { return p.Rotate90Y() })
 }
 
 // Rotate90Z is a remap which rotates each point 90 degrees about the z axis.
 // Returns itself to allow chaining.
-func (p *PointSet) Rotate90Z() *PointSet {
-	return p.Remap(func(point *Point) { point.Rotate90Z() })
+func (s *PointSet) Rotate90Z() *PointSet {
+	return s.Remap(func(p Point) Point { return p.Rotate90Z() })
 }
 
 // Union adds every point from the given set to this set.
 // Returns itself to allow chaining.
-func (p *PointSet) Union(o *PointSet) *PointSet {
-	for _, point := range o.Points {
-		p.Add(point)
+func (s *PointSet) Union(o *PointSet) *PointSet {
+	for _, p := range o.Points {
+		s.Add(p)
 	}
-	return p
+	return s
 }
 
 // IntersectionSize returns the number of points in the given point set which
 // are also elements of this point set.
-func (p *PointSet) IntersectionSize(o *PointSet) int {
-	largerSet, smallerSet := p, o
+func (s *PointSet) IntersectionSize(o *PointSet) int {
+	largerSet, smallerSet := s, o
 	if smallerSet.Size() > largerSet.Size() {
-		largerSet, smallerSet = o, p
+		largerSet, smallerSet = o, s
 	}
 
 	count := 0
-	for _, point := range smallerSet.Points {
-		if largerSet.Contains(point) {
+	for _, p := range smallerSet.Points {
+		if largerSet.Contains(p) {
 			count++
 		}
 	}
@@ -303,46 +291,131 @@ func (i *OrientationIterator) Next() {
 // Orientations returns a slice of the 24 orientations for this PointSet.
 // These orientations will be cached so that subsequent calls return the
 // same 24 orientation PointSets. This PointSet is not mutated at all.
-func (p *PointSet) Orientations() []*PointSet {
-	if p.OrientationsCache != nil {
-		return p.OrientationsCache
+func (s *PointSet) Orientations() []*PointSet {
+	if s.OrientationsCache != nil {
+		return s.OrientationsCache
 	}
 
-	for it := (&OrientationIterator{PointSet: p.Clone()}); !it.IsEnd(); it.Next() {
-		p.OrientationsCache = append(p.OrientationsCache, it.PointSet.Clone())
+	for it := (&OrientationIterator{PointSet: s.Clone()}); !it.IsEnd(); it.Next() {
+		s.OrientationsCache = append(s.OrientationsCache, it.PointSet.Clone())
 	}
 
-	return p.OrientationsCache
+	return s.OrientationsCache
 }
 
-type ThreadSafeMap[K, V any] struct {
-	sync.Map
+// A PointFingerprinter is used to compute a fingerprint for a reference
+// point using the the distances from that point to a set of other points.
+// The fingerprint can be used for matching a point with another point which
+// was fingerprinted with a different origin.
+type PointFingerprinter struct {
+	Reference Point
+	DistanceSquares map[Point]int
 }
 
-func (m *ThreadSafeMap[K, V]) Delete(key K) {
-	m.Map.Delete(key)
+func NewPointFingerprinter(reference Point, cap int) *PointFingerprinter {
+	return &PointFingerprinter{
+		Reference: reference,
+		DistanceSquares: make(map[Point]int, cap),
+	}
 }
 
-func (m *ThreadSafeMap[K, V]) Load(key K) (V, bool) {
-	val, ok := m.Map.Load(key)
-	if ok {
-		return val.(V), ok
+func (f *PointFingerprinter) Add(p Point) {
+	// Compute the vector from the reference point to p.
+	refToP := p.Subtract(f.Reference)
+
+	// Using the square of the distances means I don't have to do
+	// any square roots which are more computationally expensive.
+	f.DistanceSquares[p] = refToP.MagnitudeSquared()
+}
+
+type PointFingerprint []int
+
+func (f *PointFingerprinter) Fingerprint() PointFingerprint {
+	fingerprint := make([]int, 0, len(f.DistanceSquares))
+	for _, distanceSquared := range f.DistanceSquares {
+		fingerprint = append(fingerprint, distanceSquared)
+	}
+	sort.Ints(fingerprint)
+	return PointFingerprint(fingerprint)
+}
+
+// Matches returns whether or not the given fingerprint is a match with this
+// fingerprint with at least threshold many of the same distances from their
+// reference point, which means they are the same point from a different
+// reference origin.
+func (f PointFingerprint) Matches(g PointFingerprint, threshold int) bool {
+	var i, j, matches int
+	for i < len(f) && j < len(g) {
+		switch {
+		case f[i] < g[j]:
+			i++
+		case f[i] > g[j]:
+			j++
+		default: // f[i] == g[j]
+			i++; j++; matches++
+			if matches == threshold {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (f PointFingerprint) Equals(g PointFingerprint) bool {
+	if len(f) != len(g) {
+		return false
 	}
 
-	var zero V
-	return zero, ok
+	for i := range f {
+		if f[i] != g[i] {
+			return false
+		}
+	}
+
+	return true
 }
 
-func (m *ThreadSafeMap[K, V]) Store(key K, value V) {
-	m.Map.Store(key, value)
+func (s *PointSet) GenerateFingerprints() {
+	s.Fingerprints = make(map[Point]PointFingerprint, s.Size())
+	for i, p := range s.Points {
+		fingerprinter := NewPointFingerprinter(p, s.Size()-1)
+		for j, q := range s.Points {
+			if i != j { // Don't include the point itself.
+				fingerprinter.Add(q)
+			}
+		}
+		s.Fingerprints[p] = fingerprinter.Fingerprint()
+	}
 }
 
-type TranslationCacheKey struct {
-	*PointSet
-	Point
+func (s *PointSet) FindEqualPoint(fingerprint PointFingerprint) (Point, bool) {
+	for _, q := range s.Points {
+		if s.Fingerprints[q].Equals(fingerprint) {
+			return q, true
+		}
+	}
+	return Point{}, false
 }
 
-type TranslationCache = ThreadSafeMap[TranslationCacheKey, *PointSet]
+func FindMatchingPoints(setA, setB *PointSet) (pointA, pointB Point, found bool) {
+	for _, pointA = range setA.Points {
+		// We don't need to check the last 11 points in set B because if there is
+		// a match then there would be a match with at least 12 points. If there
+		// are 11 left then one of the previous points would have been a match.
+		for _,  pointB = range setB.Points[:setB.Size()-11] {
+			fingerprintA := setA.Fingerprints[pointA]
+			fingerprintB := setB.Fingerprints[pointB]
+
+			// If it's the same point then the fingerprints
+			// should match with at least 11 other points.
+			if fingerprintA.Matches(fingerprintB, 11) {
+				return pointA, pointB, true
+			}
+		}
+	}
+
+	return Point{}, Point{}, false
+}
 
 // TryMatchOrientations will attempt to patch the given candidate PointSet with
 // the given reduced PointSet. If there is a translation of any orientation of
@@ -351,9 +424,13 @@ type TranslationCache = ThreadSafeMap[TranslationCacheKey, *PointSet]
 // returned. If there is no match, returns (nil, nil).
 //
 // This function does not mutate the given PoinSets.
-func TryMatchOrientations(reduced, candidate *PointSet, cache *TranslationCache) (match *PointSet, origin *Point) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func TryMatchOrientations(reduced, candidate *PointSet) (match *PointSet, origin Point) {
+	reducedPoint, candidatePoint, found := FindMatchingPoints(reduced, candidate)
+	if !found {
+		// The reduced set and candidate set don't have any points in common.
+		// Don't bother looking for a matching orientation and translation.
+		return
+	}
 
 	var wg sync.WaitGroup
 	for _, orientation := range candidate.Orientations() {
@@ -361,65 +438,59 @@ func TryMatchOrientations(reduced, candidate *PointSet, cache *TranslationCache)
 		go func(orientation *PointSet) {
 			defer wg.Done()
 
-			// We don't need to check the last 11 points in the candidate orientation because
-			// if there is a match then there would be a match with at least 12 points. If
-			// there are 11 left then one of the previous points would have been a match.
-			for _, b := range orientation.Points[:orientation.Size()-11] {
-				for _, a := range reduced.Points {
-					select {
-					case <-ctx.Done():
-						return
-					default:
-					}
-
-					translation := a.Clone().Subtract(b)
-
-					// The translated orientation may be cached from a previous attempt to
-					// match this point in A to the point in B. The orientation pointers
-					// are cached for every candidate, but that logic is internal to PointSet.
-					cacheKey := TranslationCacheKey{orientation, *translation}
-					bTranslated, ok := cache.Load(cacheKey)
-					if !ok {
-						bTranslated = orientation.Clone().Translate(translation)
-						cache.Store(cacheKey, bTranslated)
-					}
-
-					if reduced.IntersectionSize(bTranslated) >= 12 {
-						match, origin = bTranslated, translation
-						cancel()
-						return
-					}
-				}
+			if orientation.Fingerprints == nil {
+				// Orientations are cached so the fingerprints will be cached, too.
+				orientation.GenerateFingerprints()
 			}
-		}(orientation)	
+
+			candidatePointFingerprint := candidate.Fingerprints[candidatePoint]
+			orientationPoint, ok := orientation.FindEqualPoint(candidatePointFingerprint)
+			if !ok { panic("unable to find equal fingerprint point between orientations") }
+
+			// We know from the matching fingerprint that these *are* the same point but
+			// we need to check whether we are in the correct orientation for the candidate.
+
+			translation := reducedPoint.Subtract(orientationPoint)
+			translated := orientation.Clone().Translate(translation)
+			if reduced.IntersectionSize(translated) >= 12 {
+				match, origin = translated, translation
+			}
+		}(orientation)
 	}
 
 	wg.Wait()
 	return
 }
 
-func ReducePointSets(pointSets []*PointSet) (reduced, origins *PointSet) {
-	// Keep track of the origins of the original point sets.
+func ReducePointSetsByMatchingOrientations(scanners []*PointSet) (reduced, origins *PointSet) {
+	// Keep track of the origins of the scanners relative to our canonical scanner.
 	// This corresponds to the scanner coordinates relative to the first scanner.
-	origins = NewPointSet(len(pointSets))
+	origins = NewPointSet(len(scanners))
 
-	reduced, pointSets = pointSets[0], pointSets[1:]
+	reduced, scanners = scanners[0], scanners[1:]
 
 	// The scanner from the first PointSet is our 'true' origin. All other scanner
 	// locations are relative to this one.
-	origins.Add(NewPoint(0, 0, 0))
+	origins.Add(Point{0, 0, 0})
 
-	var cache TranslationCache
+	// Generate fingerprints for all scanner data.
+	for _, scanner := range scanners {
+		scanner.GenerateFingerprints()
+	}
 
-	for len(pointSets) > 0 {
+	for len(scanners) > 0 {
 		var  (
 			matchingCandidateOrientation, candidate *PointSet
-			origin *Point
+			origin Point
 			i int
 		)
 
-		for i, candidate = range pointSets {
-			matchingCandidateOrientation, origin = TryMatchOrientations(reduced, candidate, &cache)
+		// Regenerate fingerprints for the reduced set of beacons since we have
+		// added new points from the previous iteration.
+		reduced.GenerateFingerprints()
+
+		for i, candidate = range scanners {
+			matchingCandidateOrientation, origin = TryMatchOrientations(reduced, candidate)
 			if matchingCandidateOrientation != nil {
 				break
 			}
@@ -432,9 +503,9 @@ func ReducePointSets(pointSets []*PointSet) (reduced, origins *PointSet) {
 		reduced.Union(matchingCandidateOrientation)
 		origins.Add(origin)
 
-		// Splice element i out of the slice of point sets.
-		pointSets = append(pointSets[:i], pointSets[i+1:]...)
-		fmt.Printf("reduced to %d sets\n", len(pointSets)+1)
+		// Splice element i out of the slice of scanners.
+		scanners = append(scanners[:i], scanners[i+1:]...)
+		fmt.Printf("reduced to %d sets\n", len(scanners)+1)
 	}
 
 	return reduced, origins
@@ -447,7 +518,7 @@ func main() {
 		fmt.Printf("scanner %d has %d beacons\n", i, pointSet.Size())
 	}
 
-	beaconPointSet, scannerPointSet := ReducePointSets(pointSets)
+	beaconPointSet, scannerPointSet := ReducePointSetsByMatchingOrientations(pointSets)
 	fmt.Printf("count of unique beacons: %d\n", beaconPointSet.Size())
 
 	maxScannerDistance := 0
