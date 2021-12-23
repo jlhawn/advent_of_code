@@ -12,32 +12,40 @@ import (
 	"time"
 )
 
-func Max[T constraints.Ordered](vals ...T) T {
+func MaxFunc[T any](less func(a, b T) bool, vals ...T) T {
 	var max T
 	if len(vals) == 0 {
 		return max
 	}
 	max = vals[0]
 	for _, val := range vals[1:] {
-		if val > max {
+		if less(max, val) {
 			max = val
 		}
 	}
 	return max
 }
 
-func Min[T constraints.Ordered](vals ...T) T {
+func MinFunc[T any](less func(a, b T) bool, vals ...T) T {
 	var min T
 	if len(vals) == 0 {
 		return min
 	}
 	min = vals[0]
 	for _, val := range vals[1:] {
-		if val < min {
+		if less(val, min) {
 			min = val
 		}
 	}
 	return min
+}
+
+func Max[T constraints.Ordered](vals ...T) T {
+	return MaxFunc(func (a, b T) bool { return a < b }, vals...)
+}
+
+func Min[T constraints.Ordered](vals ...T) T {
+	return MinFunc(func (a, b T) bool { return a < b }, vals...)
 }
 
 func Map[T1, T2 any](f func(T1) T2, vals ...T1) []T2 {
@@ -107,4 +115,8 @@ func readInputLines() []string {
 	}
 
 	return lines
+}
+
+func main() {
+
 }
