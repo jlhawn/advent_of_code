@@ -10,6 +10,71 @@ import (
 	"strings"
 )
 
+type SequenceNode[T any] struct {
+	Item T
+	Next *SequenceNode[T]
+}
+
+type Sequence[T any] struct {
+	First *SequenceNode[T]
+	Size int
+}
+
+func (s *Sequence[T]) ShallowCopy() *Sequence[T] {
+	return &Sequence[T]{
+		First: s.First,
+		Size: s.Size,
+	}
+}
+
+func (s *Sequence[T]) Prepend(val T) {
+	s.Size++
+	node := &SequenceNode[T]{Item: val}
+
+	if s.First == nil {
+		s.First = node
+		return
+	}
+
+	node.Next = s.First
+	s.First = node
+}
+
+func (s *Sequence[T]) ForEach(f func(T)) {
+	node := s.First
+	for node != nil {
+		f(node.Item)
+		node = node.Next
+	}
+}
+
+func (s *Sequence[T]) AsSlice() []T {
+	if s == nil {
+		return nil
+	}
+	items := make([]T, s.Size)
+	node := s.First
+	for i := 0; node != nil; i++ {
+		items[i] = node.Item
+		node = node.Next
+	}
+	return items
+}
+
+func MapSequence[T1, T2 any](f func(T1) T2, seq *Sequence[T1]) []T2 {
+	if seq == nil {
+		return nil
+	}
+
+	mapped := make([]T2, seq.Size)
+	node := seq.First
+	for i := 0; node != nil; i++ {
+		mapped[i] = f(node.Item)
+		node = node.Next
+	}
+	return mapped
+}
+
 func MaxFunc[T any](less func(a, b T) bool, vals ...T) T {
 	var max T
 	if len(vals) == 0 {
@@ -54,6 +119,15 @@ func Map[T1, T2 any](f func(T1) T2, vals ...T1) []T2 {
 	return mapped
 }
 
+func FlatMap[T1, T2 any](f func(T1) []T2, vals ...T1) []T2 {
+	mapped := Map(f, vals...)
+	if len(mapped) == 0 {
+		return []T2{}
+	}
+	cap := SumFunc(func(a []T2) int { return len(a) }, mapped...)
+	return Reduce(func(a, b []T2) []T2 { return append(a, b...) }, make([]T2, 0, cap), mapped...)
+}
+
 func Reduce[T any](f func(T, T) T, init T, vals ...T) T {
 	reduced := init
 	for _, val := range vals {
@@ -65,6 +139,10 @@ func Reduce[T any](f func(T, T) T, init T, vals ...T) T {
 func Sum[T constraints.Integer | constraints.Float](vals ...T) T {
 	var zero T
 	return Reduce(func(a, b T) T { return a + b }, zero, vals...)
+}
+
+func SumFunc[T1 any, T2 constraints.Integer | constraints.Float](f func(T1) T2,  vals ...T1) T2 {
+	return Sum(Map(f, vals...)...)
 }
 
 func Filter[T any](f func(T) bool, vals ...T) []T {
@@ -203,6 +281,28 @@ func (s *Space) String() string {
 	return "."
 }
 
+func (s *Space) ID() string {
+	index := 0
+	at := s
+	for at.IsRoom && at.Up.IsRoom {
+		// Index is how far this room space is from the hallway.
+		at = at.Up
+		index++
+	}
+
+	if at.IsRoom {
+		// Index is how far this room space is from the hallway.
+		return fmt.Sprintf("Room %s-%d", at.TargetType, index)
+	}
+
+	// Index is how far we are from the left end of the hallway.
+	for at.Left != nil {
+		index++
+		at = at.Left
+	}
+	return fmt.Sprintf("Hallway %d", index)
+}
+
 type Amphipod struct {
 	Type AmphipodType
 	Location *Space
@@ -231,27 +331,37 @@ func (a *Amphipod) IsDone() bool {
 	return true
 }
 
-type MoveOption struct {
+type Move struct {
 	Amphipod *Amphipod
 	From, To *Space
 	Cost int
 }
 
-func (m *MoveOption) Do() {
+func (m *Move) Do() {
 	m.From.Occupant = nil
 	m.To.Occupant = m.Amphipod
 	m.Amphipod.Location = m.To
 }
 
-func (m *MoveOption) Undo() {
+func (m *Move) Undo() {
 	m.To.Occupant = nil
 	m.From.Occupant = m.Amphipod
 	m.Amphipod.Location = m.From
 }
 
+func (m *Move) String() string {
+	return fmt.Sprintf("Move %s from %s to %s for %d energy", m.Amphipod, m.From.ID(), m.To.ID(), m.Cost)
+}
+
+type MoveSequence = Sequence[*Move]
+
+func TotalCost(seq *MoveSequence) int {
+	return Sum(MapSequence(func(m *Move) int { return m.Cost }, seq)...)
+}
+
 // Options returns a slice of the locations which this amphipod is legally
 // able to move to given the rules.
-func (a *Amphipod) Options() []*MoveOption {
+func (a *Amphipod) Options() []*Move {
 	if a.IsDone() {
 		return nil
 	}
@@ -271,7 +381,7 @@ func (a *Amphipod) Options() []*MoveOption {
 			aboveRoom = aboveRoom.Up
 		}
 
-		options := make([]*MoveOption, 0, 7)
+		options := make([]*Move, 0, 7)
 
 		// Now in the hallway space above the room which cannot be occupied.
 		// Move left and right to look for options to move to.
@@ -280,7 +390,7 @@ func (a *Amphipod) Options() []*MoveOption {
 		// While we don't reach the end or bump into another amphipod...
 		for to != nil && to.Occupant == nil {
 			if to.Down == nil { // Not also above a room.
-				options = append(options, &MoveOption{Amphipod: a, From: a.Location, To: to, Cost: cost})
+				options = append(options, &Move{Amphipod: a, From: a.Location, To: to, Cost: cost})
 			}
 			// Step left again.
 			to = to.Left
@@ -292,7 +402,7 @@ func (a *Amphipod) Options() []*MoveOption {
 		// While we don't reach the end or bump into another amphipod...
 		for to != nil && to.Occupant == nil {
 			if to.Down == nil { // Not also above a room.
-				options = append(options, &MoveOption{Amphipod: a, From: a.Location, To: to, Cost: cost})
+				options = append(options, &Move{Amphipod: a, From: a.Location, To: to, Cost: cost})
 			}
 			// Step right again.
 			to = to.Right
@@ -356,7 +466,7 @@ func (a *Amphipod) Options() []*MoveOption {
 		return nil // Blocked by an occupant that needs to get out first.
 	}
 
-	return []*MoveOption{&MoveOption{Amphipod: a, From: a.Location, To: to, Cost: cost}}
+	return []*Move{&Move{Amphipod: a, From: a.Location, To: to, Cost: cost}}
 }
 
 type Configuration struct {
@@ -444,43 +554,45 @@ func (c *Configuration) Fingerprint() string {
 	return b.String()
 }
 
-type ConfigCostCache map[string]int
+type ConfigCostCache map[string]*MoveSequence
 
-func (c *Configuration) LeastCostToOrganize(cache ConfigCostCache) int {
+func (c *Configuration) LeastCostMovesToOrganize(cache ConfigCostCache) *MoveSequence {
 	fingerprint := c.Fingerprint()
 
-	if cachedCost, ok := cache[fingerprint]; ok {
-		return cachedCost
+	if cachedMoves, ok := cache[fingerprint]; ok {
+		return cachedMoves
 	}
 
 	if c.IsOrganized() {
-		cache[fingerprint] = 0
-		return 0
+		seq := &MoveSequence{}
+		cache[fingerprint] = seq
+		return seq
 	}
 
-	allOptions := make([]*MoveOption, 0, 28)
-	for _, amphipod := range c.Amphipods {
-		options := amphipod.Options()
-		for _, option := range options {
-			allOptions = append(allOptions, option)
-		}
-	}
-
-	minCost := -1
-	for _, option := range allOptions {
+	evaluatedOptions := Filter(func(moves *MoveSequence) bool {
+		return moves != nil
+	}, Map(func(option *Move) *MoveSequence {
 		option.Do()
-		if cost := c.LeastCostToOrganize(cache); cost >= 0 {
-			if minCost < 0 {
-				minCost = option.Cost + cost
-			} else {
-				minCost = Min(minCost, option.Cost + cost)
-			}
+		defer option.Undo()
+		seq := c.LeastCostMovesToOrganize(cache)
+		if seq != nil {
+			seq = seq.ShallowCopy()
+			seq.Prepend(option)
 		}
-		option.Undo()
+		return seq
+	}, FlatMap(func(amphipod *Amphipod) []*Move {
+		return amphipod.Options()
+	}, c.Amphipods...)...)...)
+
+	var minCostMoves *MoveSequence
+	if len(evaluatedOptions) > 0 {
+		minCostMoves = MinFunc(func(a, b *MoveSequence) bool {
+			return TotalCost(a) < TotalCost(b)
+		}, evaluatedOptions...)
 	}
 
-	cache[fingerprint] = minCost
-	return minCost
+	cache[fingerprint] = minCostMoves
+	return minCostMoves
 }
 
 func main() {
@@ -488,16 +600,20 @@ func main() {
 	fmt.Println(initialTypes)
 	config := NewConfiguration(initialTypes)
 
-	cache := make(ConfigCostCache)
-	leastCost := config.LeastCostToOrganize(cache)
-	fmt.Println(leastCost)
+	leastCostMoves := config.LeastCostMovesToOrganize(ConfigCostCache{})
+	fmt.Printf("Part 1: %d\n", TotalCost(leastCostMoves))
+	leastCostMoves.ForEach(func(move *Move) {
+		fmt.Println(move)
+	})
 
 	insertTypes := []AmphipodType{Desert, Copper, Bronze, Amber, Desert, Bronze, Amber, Copper}
 	initialTypes = append(initialTypes[:4], append(insertTypes, initialTypes[4:]...)...)
 	fmt.Println(initialTypes)
 	config = NewConfiguration(initialTypes)
 
-	cache = make(ConfigCostCache)
-	leastCost = config.LeastCostToOrganize(cache)
-	fmt.Println(leastCost)
+	leastCostMoves = config.LeastCostMovesToOrganize(ConfigCostCache{})
+	fmt.Printf("Part 2: %d\n", TotalCost(leastCostMoves))
+	leastCostMoves.ForEach(func(move *Move) {
+		fmt.Println(move)
+	})
 }
