@@ -2,12 +2,13 @@ package main
 
 import (
 	"bufio"
-	"constraints"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+
+	"../../streams"
 )
 
 type SequenceNode[T any] struct {
@@ -27,25 +28,21 @@ func (s *Sequence[T]) ShallowCopy() *Sequence[T] {
 	}
 }
 
-func (s *Sequence[T]) Prepend(val T) {
-	s.Size++
-	node := &SequenceNode[T]{Item: val}
-
-	if s.First == nil {
-		s.First = node
-		return
-	}
-
-	node.Next = s.First
-	s.First = node
+type sequenceStream[T any] struct {
+	node *SequenceNode[T]
 }
 
-func (s *Sequence[T]) ForEach(f func(T)) {
-	node := s.First
-	for node != nil {
-		f(node.Item)
-		node = node.Next
+func (s *sequenceStream[T]) Next() (item T, ok bool) {
+	if s.node == nil {
+		return item, false
 	}
+	item = s.node.Item
+	s.node = s.node.Next
+	return item, true
+}
+
+func (s *Sequence[T]) Stream() streams.Stream[T] {
+	return &sequenceStream[T]{node: s.First}
 }
 
 func (s *Sequence[T]) AsSlice() []T {
@@ -61,104 +58,17 @@ func (s *Sequence[T]) AsSlice() []T {
 	return items
 }
 
-func MapSequence[T1, T2 any](f func(T1) T2, seq *Sequence[T1]) []T2 {
-	if seq == nil {
-		return nil
+func (s *Sequence[T]) Prepend(val T) {
+	s.Size++
+	node := &SequenceNode[T]{Item: val}
+
+	if s.First == nil {
+		s.First = node
+		return
 	}
 
-	mapped := make([]T2, seq.Size)
-	node := seq.First
-	for i := 0; node != nil; i++ {
-		mapped[i] = f(node.Item)
-		node = node.Next
-	}
-	return mapped
-}
-
-func MaxFunc[T any](less func(a, b T) bool, vals ...T) T {
-	var max T
-	if len(vals) == 0 {
-		return max
-	}
-	max = vals[0]
-	for _, val := range vals[1:] {
-		if less(max, val) {
-			max = val
-		}
-	}
-	return max
-}
-
-func MinFunc[T any](less func(a, b T) bool, vals ...T) T {
-	var min T
-	if len(vals) == 0 {
-		return min
-	}
-	min = vals[0]
-	for _, val := range vals[1:] {
-		if less(val, min) {
-			min = val
-		}
-	}
-	return min
-}
-
-func Max[T constraints.Ordered](vals ...T) T {
-	return MaxFunc(func (a, b T) bool { return a < b }, vals...)
-}
-
-func Min[T constraints.Ordered](vals ...T) T {
-	return MinFunc(func (a, b T) bool { return a < b }, vals...)
-}
-
-func Map[T1, T2 any](f func(T1) T2, vals ...T1) []T2 {
-	mapped := make([]T2, len(vals))
-	for i, val := range vals {
-		mapped[i] = f(val)
-	}
-	return mapped
-}
-
-func FlatMap[T1, T2 any](f func(T1) []T2, vals ...T1) []T2 {
-	mapped := Map(f, vals...)
-	if len(mapped) == 0 {
-		return []T2{}
-	}
-	cap := SumFunc(func(a []T2) int { return len(a) }, mapped...)
-	return Reduce(func(a, b []T2) []T2 { return append(a, b...) }, make([]T2, 0, cap), mapped...)
-}
-
-func Reduce[T any](f func(T, T) T, init T, vals ...T) T {
-	reduced := init
-	for _, val := range vals {
-		reduced = f(reduced, val)
-	}
-	return reduced
-}
-
-func Sum[T constraints.Integer | constraints.Float](vals ...T) T {
-	var zero T
-	return Reduce(func(a, b T) T { return a + b }, zero, vals...)
-}
-
-func SumFunc[T1 any, T2 constraints.Integer | constraints.Float](f func(T1) T2,  vals ...T1) T2 {
-	return Sum(Map(f, vals...)...)
-}
-
-func Filter[T any](f func(T) bool, vals ...T) []T {
-	filtered := make([]T, 0, len(vals))
-	for _, val := range vals {
-		if f(val) {
-			filtered = append(filtered, val)
-		}
-	}
-	return filtered
-}
-
-func ForEach[T any](f func(T), vals ...T) {
-	for _, val := range vals {
-		f(val)
-	}
+	node.Next = s.First
+	s.First = node
 }
 
 const inputFilename = "./INPUT"
@@ -356,7 +266,7 @@ func (m *Move) String() string {
 type MoveSequence = Sequence[*Move]
 
 func TotalCost(seq *MoveSequence) int {
-	return Sum(MapSequence(func(m *Move) int { return m.Cost }, seq)...)
+	return streams.SumFunc(seq.Stream(), func(m *Move) int { return m.Cost })
 }
 
 // Options returns a slice of the locations which this amphipod is legally
@@ -569,9 +479,11 @@ func (c *Configuration) LeastCostMovesToOrganize(cache ConfigCostCache) *MoveSeq
 		return seq
 	}
 
-	evaluatedOptions := Filter(func(moves *MoveSequence) bool {
-		return moves != nil
-	}, Map(func(option *Move) *MoveSequence {
+	allOptions := streams.FlatMap(streams.FromItems(c.Amphipods...), func(amphipod *Amphipod) streams.Stream[*Move] {
+		return streams.FromItems(amphipod.Options()...)
+	})
+
+	evaluatedOptions := streams.Map(allOptions, func(option *Move) *MoveSequence {
 		option.Do()
 		defer option.Undo()
 		seq := c.LeastCostMovesToOrganize(cache)
@@ -580,16 +492,13 @@ func (c *Configuration) LeastCostMovesToOrganize(cache ConfigCostCache) *MoveSeq
 			seq.Prepend(option)
 		}
 		return seq
-	}, FlatMap(func(amphipod *Amphipod) []*Move {
-		return amphipod.Options()
-	}, c.Amphipods...)...)...)
+	})
 
-	var minCostMoves *MoveSequence
-	if len(evaluatedOptions) > 0 {
-		minCostMoves = MinFunc(func(a, b *MoveSequence) bool {
-			return TotalCost(a) < TotalCost(b)
-		}, evaluatedOptions...)
-	}
+	evaluatedOptions = streams.Filter(evaluatedOptions, func(moves *MoveSequence) bool {
+		return moves != nil
+	})
+
+	minCostMoves := streams.MinFunc(evaluatedOptions, func(a, b *MoveSequence) bool { return TotalCost(a) < TotalCost(b) })
 
 	cache[fingerprint] = minCostMoves
 	return minCostMoves
@@ -602,9 +511,7 @@ func main() {
 
 	leastCostMoves := config.LeastCostMovesToOrganize(ConfigCostCache{})
 	fmt.Printf("Part 1: %d\n", TotalCost(leastCostMoves))
-	leastCostMoves.ForEach(func(move *Move) {
-		fmt.Println(move)
-	})
+	streams.ForEach(leastCostMoves.Stream(), func(move *Move) { fmt.Println(move) })
 
 	insertTypes := []AmphipodType{Desert, Copper, Bronze, Amber, Desert, Bronze, Amber, Copper}
 	initialTypes = append(initialTypes[:4], append(insertTypes, initialTypes[4:]...)...)
@@ -613,7 +520,5 @@ func main() {
 
 	leastCostMoves = config.LeastCostMovesToOrganize(ConfigCostCache{})
 	fmt.Printf("Part 2: %d\n", TotalCost(leastCostMoves))
-	leastCostMoves.ForEach(func(move *Move) {
-		fmt.Println(move)
-	})
+	streams.ForEach(leastCostMoves.Stream(), func(move *Move) { fmt.Println(move) })
 }
