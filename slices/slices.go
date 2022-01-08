@@ -94,3 +94,21 @@ func Sum[T Number](vals ...T) (sum T) {
 	return Reduce(func(a, b T) T { return a + b }, sum, vals...)
 }
 
+func All[T any](predicate func(T) bool, vals ...T) bool {
+	for _, val := range vals {
+		if !predicate(val) {
+			return false
+		}
+	}
+	return true
+}
+
+func Any[T any](predicate func(T) bool, vals ...T) bool {
+	for _, val := range vals {
+		if predicate(val) {
+			return true
+		}
+	}
+	return false
+}
+

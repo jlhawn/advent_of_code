@@ -207,3 +207,25 @@ func Sum[T Number](s Stream[T]) (sum T) {
 	return Reduce(s, sum, func(a, b T) T { return a + b })
 }
 
+func All[T any](s Stream[T], predicate func(T) bool) bool {
+	item, ok := s.Next()
+	for ok {
+		if !predicate(item) {
+			return false
+		}
+		item, ok = s.Next()
+	}
+	return true
+}
+
+func Any[T any](s Stream[T], predicate func(T) bool) bool {
+	item, ok := s.Next()
+	for ok {
+		if predicate(item) {
+			return true
+		}
+		item, ok = s.Next()
+	}
+	return false
+}
+
