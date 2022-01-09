@@ -20,6 +20,24 @@ func Reverse[T any](vals []T) {
     }
 }
 
+func FromMapKeys[K comparable, V any](m map[K]V) []K {
+	i, keys := 0, make([]K, len(m))
+	for key := range m {
+		keys[i] = key
+		i++
+	}
+	return keys
+}
+
+func FromMapValues[K comparable, V any](m map[K]V) []V {
+	i, values := 0, make([]V, len(m))
+	for _, value := range m {
+		values[i] = value
+		i++
+	}
+	return values
+}
+
 func Map[T1, T2 any](mapper func(T1) T2, vals ...T1) []T2 {
 	mapped := make([]T2, len(vals))
 	for i, item := range vals {
