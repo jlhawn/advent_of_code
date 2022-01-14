@@ -12,6 +12,84 @@ type Stream[T any] interface {
 	Next() (item T, ok bool)
 }
 
+type onceStream[T any] struct {
+	called bool
+	generator func() (item T, ok bool)
+}
+
+func (s *onceStream[T]) Next() (item T, ok bool) {
+	if !s.called {
+		s.called = true
+		item, ok = s.generator()
+	}
+	return item, ok
+}
+
+func Once[T any](f func() (item T, ok bool)) Stream[T] {
+	return &onceStream[T]{generator: f}
+}
+
+type generatorStream[T any] struct {
+	generator func() (item T, ok bool)
+	ended bool
+}
+
+func (s *generatorStream[T]) Next() (item T, ok bool) {
+	if !s.ended {
+		item, ok = s.generator()
+		s.ended = !ok
+	}
+	return item, !s.ended
+}
+
+// Generator returns a stream which calls the given function
+// with each call to Next() on the returned stream. Once the
+// function returns a false ok value, the function will not
+// be called again and any successive calls to its Next()
+// method will also return a false ok value.
+// This may be useful for when you could use FromItems() but
+// want to lazily evaluate the results or when you want to
+// produce a stream of items that relies on data stored in a
+// closure rather than creating a new object which implements
+// the Stream[T] interface.
+func Generator[T any](f func() (item T, ok bool)) Stream[T] {
+	return &generatorStream[T]{generator: f}
+}
+
+type finalizerStream[T any] struct {
+	Stream[T]
+	finalize func()
+}
+
+func (s finalizerStream[T]) Next() (item T, ok bool) {
+	item, ok = s.Stream.Next()
+	if !ok {
+		s.finalize()
+	}
+	return item, ok
+}
+
+func WithFinalizer[T any](s Stream[T], finalize func()) Stream[T] {
+	return finalizerStream[T]{s, finalize}
+}
+
+type initializerStream[T any] struct {
+	Stream[T]
+	initialize func()
+}
+
+func (s *initializerStream[T]) Next() (item T, ok bool) {
+	if s.initialize != nil {
+		s.initialize()
+		s.initialize = nil
+	}
+	return s.Stream.Next()
+}
+
+func WithInitializer[T any](s Stream[T], initialize func()) Stream[T] {
+	return &initializerStream[T]{s, initialize}
+}
+
 func ForEach[T any](s Stream[T], f func(T)) {
 	item, ok := s.Next()
 	for ok {
@@ -105,7 +183,7 @@ func Map[T1, T2 any](in Stream[T1], mapper func(T1) T2) Stream[T2] {
 	}
 }
 
-type flatMappedStream[T1, T2 any] struct {
+type flatMappedStream[T1, T2 comparable] struct {
 	in Stream[T1]
 	out Stream[T2]
 	mapper func(T1) Stream[T2]
@@ -125,7 +203,7 @@ func (s *flatMappedStream[T1, T2]) Next() (item T2, ok bool) {
 	return item, true
 }
 
-func FlatMap[T1, T2 any](in Stream[T1], mapper func(T1) Stream[T2]) Stream[T2] {
+func FlatMap[T1, T2 comparable](in Stream[T1], mapper func(T1) Stream[T2]) Stream[T2] {
 	return &flatMappedStream[T1, T2]{
 		in: in,
 		out: Null[T2](),
